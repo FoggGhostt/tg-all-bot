@@ -78,15 +78,18 @@ systemctl status tg-all-bot
 journalctl -u tg-all-bot -f
 ```
 
-Обновление потом:
+Обновление потом — одна команда из репо:
 ```bash
-# локально
+./deploy.sh root@161.104.34.193
+```
+Скрипт собирает свежий бинарь, заливает его на сервер под временным именем, делает атомарный `mv` (чтобы не упереться в `ETXTBSY` от запущенного процесса), рестартит сервис и показывает первые строки логов. Если ARM-сервер: `ARCH=arm64 ./deploy.sh root@host`.
+
+Руками то же самое:
+```bash
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
     -trimpath -ldflags="-s -w" -o dist/tg-all-bot-linux-amd64 .
-scp dist/tg-all-bot-linux-amd64 root@server:/usr/local/bin/tg-all-bot
-
-# на сервере
-systemctl restart tg-all-bot
+scp dist/tg-all-bot-linux-amd64 root@server:/usr/local/bin/tg-all-bot.new
+ssh root@server 'mv /usr/local/bin/tg-all-bot.new /usr/local/bin/tg-all-bot && chmod +x /usr/local/bin/tg-all-bot && systemctl restart tg-all-bot'
 ```
 
 База лежит в `/var/lib/tg-all-bot/bot.db` — переживает рестарты и реинсталлы бинаря.
