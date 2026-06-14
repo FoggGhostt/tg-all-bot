@@ -39,24 +39,69 @@ Telegram-бот, который умеет в один тег позвать в�
 
 ## Деплой
 
-Образ собирается в GitHub Actions и пушится в GitHub Container Registry (`ghcr.io/foggghostt/tg-all-bot:latest`). На сервере сборки **нет вообще** — только `docker compose pull`. Так что подходит даже слабым VPS, и обходит блокировку Docker Hub.
-
 ### Требования
-- Docker + Docker Compose
 - Bot token от [@BotFather](https://t.me/BotFather)
 - В BotFather: **Bot Settings → Group Privacy → Turn off** (иначе бот будет видеть только команды, не все сообщения). Альтернатива — сделать бота админом группы.
 
-### Разовая настройка (один раз после первого push)
+### Способ 1 — голый бинарь + systemd (рекомендую)
 
-После первого пуша в `main` GitHub Actions соберёт образ и положит его в ghcr.io. **По умолчанию пакет приватный** — сделай его публичным, чтобы сервер мог тянуть без логина:
+Самый лёгкий путь для слабого сервера в РФ. Собираешь бинарь у себя локально, заливаешь на сервер, systemd держит его живым. **На сервере не нужны ни Docker, ни Go, ни сеть до GitHub/Docker Hub.**
 
+**Локально** (Mac/Linux):
+```bash
+git clone git@github.com:FoggGhostt/tg-all-bot.git && cd tg-all-bot
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+    -trimpath -ldflags="-s -w" -o dist/tg-all-bot-linux-amd64 .
+
+scp dist/tg-all-bot-linux-amd64 root@server:/usr/local/bin/tg-all-bot
+scp deploy/tg-all-bot.service root@server:/etc/systemd/system/
+```
+
+**На сервере** (один раз):
+```bash
+useradd --system --no-create-home --shell /usr/sbin/nologin tg-all-bot
+mkdir -p /var/lib/tg-all-bot && chown tg-all-bot:tg-all-bot /var/lib/tg-all-bot
+chmod +x /usr/local/bin/tg-all-bot
+
+cat > /etc/tg-all-bot.env <<'EOF'
+BOT_TOKEN=<твой_токен>
+EOF
+chmod 600 /etc/tg-all-bot.env
+
+systemctl daemon-reload
+systemctl enable --now tg-all-bot
+systemctl status tg-all-bot
+```
+
+Логи:
+```bash
+journalctl -u tg-all-bot -f
+```
+
+Обновление потом:
+```bash
+# локально
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+    -trimpath -ldflags="-s -w" -o dist/tg-all-bot-linux-amd64 .
+scp dist/tg-all-bot-linux-amd64 root@server:/usr/local/bin/tg-all-bot
+
+# на сервере
+systemctl restart tg-all-bot
+```
+
+База лежит в `/var/lib/tg-all-bot/bot.db` — переживает рестарты и реинсталлы бинаря.
+
+> Если сервер не amd64, замени `GOARCH=amd64` на `arm64`/`arm` соответственно. Узнать на сервере: `uname -m`.
+
+### Способ 2 — Docker через ghcr.io
+
+Образ собирается в GitHub Actions и пушится в `ghcr.io/foggghostt/tg-all-bot:latest`. **На сервере сборки нет** — только `docker compose pull`. Требует, чтобы сервер мог достучаться до ghcr.io и `pkg-containers.githubusercontent.com` (иногда последний приджевывается в РФ).
+
+После первого пуша в `main` сделай пакет публичным:
 1. Открой <https://github.com/FoggGhostt/tg-all-bot/pkgs/container/tg-all-bot>
-2. **Package settings** → **Change visibility** → **Public** → подтверди
+2. **Package settings** → **Change visibility** → **Public**
 
-(Альтернатива — оставить приватным и логиниться на сервере через `docker login ghcr.io -u <user> -p <PAT>`.)
-
-### Деплой на сервер
-
+На сервере:
 ```bash
 mkdir -p ~/tg-all-bot && cd ~/tg-all-bot
 curl -O https://raw.githubusercontent.com/FoggGhostt/tg-all-bot/main/docker-compose.yml
@@ -70,42 +115,27 @@ docker compose up -d
 docker compose pull && docker compose up -d
 ```
 
-Логи:
-```bash
-docker compose logs -f
-```
+### Способ 3 — Docker, но билд локально
 
-База лежит в Docker volume `bot-data` — переживает пересборку и рестарт.
+Если ghcr.io не открывается и Docker Hub тоже:
+```bash
+# локально
+docker build -t tg-all-bot:latest .
+docker save tg-all-bot:latest | gzip | ssh root@server 'gunzip | docker load'
+
+# на сервере — docker-compose.yml уже там, .env создан как выше
+docker compose up -d
+```
 
 ### Локальная разработка
 
-В `docker-compose.yml` оставлен `build: .`, поэтому для теста изменений локально:
-```bash
-docker compose up -d --build
-```
-Это соберёт образ из исходников вместо тянуть из ghcr.
-
-Или без Docker вообще:
+Без Docker:
 ```bash
 BOT_TOKEN=<токен> DB_PATH=./bot.db go run .
 ```
-
-### Если ghcr.io тоже недоступен
-
-Тогда либо настрой registry mirror на хосте, либо вернись к локальной сборке. Mirror для Docker Hub (на случай если включишь обратно `build:`):
-
+С Docker:
 ```bash
-mkdir -p /etc/docker
-cat > /etc/docker/daemon.json <<'EOF'
-{
-  "registry-mirrors": [
-    "https://mirror.gcr.io",
-    "https://huecker.io",
-    "https://dockerhub.timeweb.cloud"
-  ]
-}
-EOF
-systemctl restart docker
+docker compose up -d --build
 ```
 
 ## Конфиг

@@ -1,0 +1,31 @@
+[Unit]
+Description=Telegram tag-all bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tg-all-bot
+Group=tg-all-bot
+EnvironmentFile=/etc/tg-all-bot.env
+Environment=DB_PATH=/var/lib/tg-all-bot/bot.db
+ExecStart=/usr/local/bin/tg-all-bot
+Restart=on-failure
+RestartSec=3s
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/tg-all-bot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
