@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"html"
 	"log"
+	"math/rand/v2"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -18,14 +19,27 @@ import (
 )
 
 const (
-	mentionsPerMessage = 5
+	mentionsPerMessage = 50
+	mentionsPerLine    = 10
 	sendDelay          = 1200 * time.Millisecond
 )
 
 const welcomeText = "Привет! Я запоминаю участников этого чата по их сообщениям. " +
 	"Когда нужно позвать всех — напиши /all (также /все, /everyone, /здесь).\n\n" +
+	"Дополнительно: /add @user1 @user2 — добавить участников вручную (если кто-то ещё не писал в чат).\n\n" +
 	"Чтобы я видел сообщения всех, отключи приватность в @BotFather " +
 	"(Bot Settings → Group Privacy → Turn off) или сделай меня админом."
+
+var emojiPool = []string{
+	"🐧", "🦊", "🐢", "🐳", "🦄", "🐙", "🦋", "🐝", "🦉", "🐬",
+	"🦦", "🦔", "🐢", "🐲", "🦒", "🐨", "🐼", "🐸", "🐰", "🦝",
+	"🌈", "🌟", "⚡", "🔥", "💫", "☀️", "🌙", "⭐", "🍀", "🌸",
+	"🍕", "🍔", "🌮", "🍣", "🍦", "🍩", "☕", "🍷", "🍓", "🍑",
+	"🚀", "🎮", "🎨", "🎭", "🎲", "🎸", "🎺", "🎯", "🏆", "🎁",
+	"📚", "✏️", "🔮", "💎", "🎈", "🎉", "🌺", "🦜", "🪐", "🌊",
+}
+
+var usernameRe = regexp.MustCompile(`@([A-Za-z][A-Za-z0-9_]{4,31})`)
 
 type User struct {
 	ID        int64
@@ -43,6 +57,20 @@ func displayName(u User) string {
 		name = "участник"
 	}
 	return name
+}
+
+func callerName(u *tgbotapi.User) string {
+	if u == nil {
+		return "Кто-то"
+	}
+	name := strings.TrimSpace(u.FirstName + " " + u.LastName)
+	if name != "" {
+		return name
+	}
+	if u.UserName != "" {
+		return u.UserName
+	}
+	return "Кто-то"
 }
 
 type Store struct {
@@ -178,6 +206,8 @@ func (b *Bot) handle(update tgbotapi.Update) {
 	switch strings.ToLower(msg.Command()) {
 	case "all", "everyone", "here", "все", "всех", "здесь":
 		b.handleTagAll(msg)
+	case "add":
+		b.handleAdd(msg)
 	case "count":
 		b.handleCount(msg)
 	case "help", "start":
@@ -198,6 +228,7 @@ func (b *Bot) handlePrivate(msg *tgbotapi.Message) {
 func (b *Bot) handleHelp(msg *tgbotapi.Message) {
 	text := "Команды:\n" +
 		"• /all (также /все, /everyone, /здесь) — тегнуть всех известных участников\n" +
+		"• /add @user1 @user2 — добавить участников в базу вручную (только админ)\n" +
 		"• /count — сколько участников я уже видел\n" +
 		"• /help — эта справка\n\n" +
 		"Я запоминаю людей по их сообщениям. Чтобы видеть всех, отключи приватность в @BotFather или сделай меня админом."
@@ -225,28 +256,145 @@ func (b *Bot) handleTagAll(msg *tgbotapi.Message) {
 	}
 	if len(users) == 0 {
 		reply := tgbotapi.NewMessage(msg.Chat.ID,
-			"Я ещё никого не запомнил в этом чате. Подожди, пока люди напишут хотя бы по одному сообщению.")
+			"Я ещё никого не запомнил в этом чате. Подожди, пока люди напишут хотя бы по одному сообщению, или добавь руками через /add @user1 @user2.")
 		reply.ReplyToMessageID = msg.MessageID
 		b.send(reply)
 		return
 	}
 
-	for i := 0; i < len(users); i += mentionsPerMessage {
+	caller := callerName(msg.From)
+	total := len(users)
+
+	for i := 0; i < total; i += mentionsPerMessage {
 		end := i + mentionsPerMessage
-		if end > len(users) {
-			end = len(users)
+		if end > total {
+			end = total
 		}
-		out := tgbotapi.NewMessage(msg.Chat.ID, buildMentions(users[i:end]))
+		chunk := users[i:end]
+
+		var body strings.Builder
+		if i == 0 {
+			body.WriteString(escapeHTML(caller))
+			body.WriteString(" запустил призыв.\n\n")
+		}
+		body.WriteString(buildEmojiMentions(chunk))
+		if end == total {
+			body.WriteString("\n\nПризыв окончен.")
+		}
+
+		out := tgbotapi.NewMessage(msg.Chat.ID, body.String())
 		out.ParseMode = "HTML"
 		out.DisableWebPagePreview = true
-		if i == 0 {
-			out.ReplyToMessageID = msg.MessageID
-		}
 		b.send(out)
-		if end < len(users) {
+		if end < total {
 			time.Sleep(sendDelay)
 		}
 	}
+}
+
+func (b *Bot) handleAdd(msg *tgbotapi.Message) {
+	if msg.From == nil || !b.isAdmin(msg.Chat.ID, msg.From.ID) {
+		reply := tgbotapi.NewMessage(msg.Chat.ID, "Только админ чата может добавлять участников вручную.")
+		reply.ReplyToMessageID = msg.MessageID
+		b.send(reply)
+		return
+	}
+
+	seen := map[int64]bool{}
+	var added, failed []string
+
+	for _, e := range msg.Entities {
+		if e.Type == "text_mention" && e.User != nil && !e.User.IsBot {
+			if seen[e.User.ID] {
+				continue
+			}
+			seen[e.User.ID] = true
+			u := User{
+				ID:        e.User.ID,
+				Username:  e.User.UserName,
+				FirstName: e.User.FirstName,
+				LastName:  e.User.LastName,
+			}
+			if err := b.store.Upsert(msg.Chat.ID, u); err != nil {
+				log.Printf("add upsert: %v", err)
+				failed = append(failed, displayName(u))
+				continue
+			}
+			added = append(added, displayName(u))
+		}
+	}
+
+	seenName := map[string]bool{}
+	for _, m := range usernameRe.FindAllStringSubmatch(msg.Text, -1) {
+		uname := m[1]
+		key := strings.ToLower(uname)
+		if seenName[key] {
+			continue
+		}
+		seenName[key] = true
+
+		chat, err := b.api.GetChat(tgbotapi.ChatInfoConfig{
+			ChatConfig: tgbotapi.ChatConfig{SuperGroupUsername: "@" + uname},
+		})
+		if err != nil {
+			failed = append(failed, "@"+uname)
+			continue
+		}
+		if chat.Type != "private" {
+			failed = append(failed, "@"+uname+" (не пользователь)")
+			continue
+		}
+		if seen[chat.ID] {
+			continue
+		}
+		seen[chat.ID] = true
+
+		u := User{
+			ID:        chat.ID,
+			Username:  chat.UserName,
+			FirstName: chat.FirstName,
+			LastName:  chat.LastName,
+		}
+		if err := b.store.Upsert(msg.Chat.ID, u); err != nil {
+			log.Printf("add upsert: %v", err)
+			failed = append(failed, "@"+uname)
+			continue
+		}
+		added = append(added, displayName(u))
+	}
+
+	var sb strings.Builder
+	if len(added) > 0 {
+		fmt.Fprintf(&sb, "Добавлено: %d\n%s", len(added), strings.Join(added, ", "))
+	}
+	if len(failed) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n")
+		}
+		fmt.Fprintf(&sb, "Не получилось: %s\n\n", strings.Join(failed, ", "))
+		sb.WriteString("Если юзер скрыл @username — выбери его через автокомплит при вводе @, тогда я смогу взять его user_id напрямую. Если бот никогда с ним не пересекался, Telegram не отдаст ID.")
+	}
+	if sb.Len() == 0 {
+		sb.WriteString("Не нашёл упоминаний. Используй: /add @user1 @user2 …  (или начни вводить @ и выбери из автокомплита для юзеров без публичного username)")
+	}
+
+	reply := tgbotapi.NewMessage(msg.Chat.ID, sb.String())
+	reply.ReplyToMessageID = msg.MessageID
+	b.send(reply)
+}
+
+func (b *Bot) isAdmin(chatID, userID int64) bool {
+	member, err := b.api.GetChatMember(tgbotapi.GetChatMemberConfig{
+		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+			ChatID: chatID,
+			UserID: userID,
+		},
+	})
+	if err != nil {
+		log.Printf("getChatMember: %v", err)
+		return false
+	}
+	return member.Status == "administrator" || member.Status == "creator"
 }
 
 func (b *Bot) send(c tgbotapi.Chattable) {
@@ -255,12 +403,28 @@ func (b *Bot) send(c tgbotapi.Chattable) {
 	}
 }
 
-func buildMentions(users []User) string {
-	parts := make([]string, 0, len(users))
-	for _, u := range users {
-		parts = append(parts, fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, u.ID, html.EscapeString(displayName(u))))
+func buildEmojiMentions(users []User) string {
+	var b strings.Builder
+	for i, u := range users {
+		if i > 0 {
+			if i%mentionsPerLine == 0 {
+				b.WriteString("\n")
+			} else {
+				b.WriteString(" ")
+			}
+		}
+		fmt.Fprintf(&b, `<a href="tg://user?id=%d">%s</a>`, u.ID, pickEmoji())
 	}
-	return strings.Join(parts, " ")
+	return b.String()
+}
+
+func pickEmoji() string {
+	return emojiPool[rand.IntN(len(emojiPool))]
+}
+
+func escapeHTML(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	return r.Replace(s)
 }
 
 func run(ctx context.Context) error {
