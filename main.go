@@ -149,6 +149,25 @@ type Bot struct {
 	selfID int64
 }
 
+func (b *Bot) learn(chatID int64, msg *tgbotapi.Message) {
+	if msg == nil {
+		return
+	}
+	for _, u := range []*tgbotapi.User{msg.From, msg.ForwardFrom} {
+		if u == nil || u.IsBot {
+			continue
+		}
+		if err := b.store.Upsert(chatID, User{
+			ID:        u.ID,
+			Username:  u.UserName,
+			FirstName: u.FirstName,
+			LastName:  u.LastName,
+		}); err != nil {
+			log.Printf("upsert user %d: %v", u.ID, err)
+		}
+	}
+}
+
 func (b *Bot) handle(update tgbotapi.Update) {
 	msg := update.Message
 	if msg == nil {
@@ -164,16 +183,8 @@ func (b *Bot) handle(update tgbotapi.Update) {
 		return
 	}
 
-	if msg.From != nil && !msg.From.IsBot {
-		if err := b.store.Upsert(msg.Chat.ID, User{
-			ID:        msg.From.ID,
-			Username:  msg.From.UserName,
-			FirstName: msg.From.FirstName,
-			LastName:  msg.From.LastName,
-		}); err != nil {
-			log.Printf("upsert sender: %v", err)
-		}
-	}
+	b.learn(msg.Chat.ID, msg)
+	b.learn(msg.Chat.ID, msg.ReplyToMessage)
 
 	for _, m := range msg.NewChatMembers {
 		if m.ID == b.selfID {
@@ -231,7 +242,12 @@ func (b *Bot) handleHelp(msg *tgbotapi.Message) {
 		"• /add @user1 @user2 — добавить участников в базу вручную (только админ)\n" +
 		"• /count — сколько участников я уже видел\n" +
 		"• /help — эта справка\n\n" +
-		"Я запоминаю людей по их сообщениям. Чтобы видеть всех, отключи приватность в @BotFather или сделай меня админом."
+		"Как я узнаю людей:\n" +
+		"1. По их сообщениям в чате (само)\n" +
+		"2. /add @user — для тех, у кого публичный username\n" +
+		"3. Перешли в чат любое сообщение от молчуна — я возьму его ID из forward_from\n" +
+		"4. Ответь reply'ем на старое сообщение — автора reply'я тоже добавлю\n\n" +
+		"Чтобы я видел сообщения всех, отключи приватность в @BotFather или сделай меня админом."
 	reply := tgbotapi.NewMessage(msg.Chat.ID, text)
 	reply.ReplyToMessageID = msg.MessageID
 	b.send(reply)
