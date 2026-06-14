@@ -1,7 +1,8 @@
 services:
   bot:
+    image: ghcr.io/foggghostt/tg-all-bot:latest
+    # For local dev: `docker compose up --build` will rebuild from source.
     build: .
-    image: tg-all-bot:latest
     container_name: tg-all-bot
     restart: unless-stopped
     environment:

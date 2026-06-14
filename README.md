@@ -39,17 +39,35 @@ Telegram-бот, который умеет в один тег позвать в�
 
 ## Деплой
 
+Образ собирается в GitHub Actions и пушится в GitHub Container Registry (`ghcr.io/foggghostt/tg-all-bot:latest`). На сервере сборки **нет вообще** — только `docker compose pull`. Так что подходит даже слабым VPS, и обходит блокировку Docker Hub.
+
 ### Требования
 - Docker + Docker Compose
 - Bot token от [@BotFather](https://t.me/BotFather)
 - В BotFather: **Bot Settings → Group Privacy → Turn off** (иначе бот будет видеть только команды, не все сообщения). Альтернатива — сделать бота админом группы.
 
-### Одна команда
+### Разовая настройка (один раз после первого push)
+
+После первого пуша в `main` GitHub Actions соберёт образ и положит его в ghcr.io. **По умолчанию пакет приватный** — сделай его публичным, чтобы сервер мог тянуть без логина:
+
+1. Открой <https://github.com/FoggGhostt/tg-all-bot/pkgs/container/tg-all-bot>
+2. **Package settings** → **Change visibility** → **Public** → подтверди
+
+(Альтернатива — оставить приватным и логиниться на сервере через `docker login ghcr.io -u <user> -p <PAT>`.)
+
+### Деплой на сервер
+
 ```bash
-git clone git@github.com:FoggGhostt/tg-all-bot.git
-cd tg-all-bot
+mkdir -p ~/tg-all-bot && cd ~/tg-all-bot
+curl -O https://raw.githubusercontent.com/FoggGhostt/tg-all-bot/main/docker-compose.yml
 echo 'BOT_TOKEN=<твой_токен>' > .env
-docker compose up -d --build
+docker compose pull
+docker compose up -d
+```
+
+Обновление:
+```bash
+docker compose pull && docker compose up -d
 ```
 
 Логи:
@@ -59,9 +77,22 @@ docker compose logs -f
 
 База лежит в Docker volume `bot-data` — переживает пересборку и рестарт.
 
-### Если Docker Hub не открывается (например, сервер в РФ)
+### Локальная разработка
 
-Тебе нужно настроить registry mirror на хосте, иначе `docker compose build` упрётся в timeout на `registry-1.docker.io`:
+В `docker-compose.yml` оставлен `build: .`, поэтому для теста изменений локально:
+```bash
+docker compose up -d --build
+```
+Это соберёт образ из исходников вместо тянуть из ghcr.
+
+Или без Docker вообще:
+```bash
+BOT_TOKEN=<токен> DB_PATH=./bot.db go run .
+```
+
+### Если ghcr.io тоже недоступен
+
+Тогда либо настрой registry mirror на хосте, либо вернись к локальной сборке. Mirror для Docker Hub (на случай если включишь обратно `build:`):
 
 ```bash
 mkdir -p /etc/docker
@@ -77,13 +108,6 @@ EOF
 systemctl restart docker
 ```
 
-Проверь:
-```bash
-docker info | grep -A4 "Registry Mirrors"
-```
-
-После этого `docker compose up -d --build` пройдёт.
-
 ## Конфиг
 
 | ENV | Дефолт | Что |
@@ -98,9 +122,4 @@ docker info | grep -A4 "Registry Mirrors"
 - На `new_chat_members` — добавить, на `left_chat_member` — удалить.
 - На `/all` — список из БД → батчи по 50 эмодзи-ссылок → отправка с задержкой 1.2 с между батчами (чтобы не упереться в лимит Telegram «20 msg/min в одну группу»).
 - На `/add` — `text_mention`-entities парсятся напрямую (там есть `User` объект с ID), а `@username`-mentions резолвятся через `getChat`.
-
-## Локальный запуск без Docker
-
-```bash
-BOT_TOKEN=<токен> DB_PATH=./bot.db go run .
-```
+- **CI/CD**: `.github/workflows/docker.yml` собирает мульти-слойный образ и пушит в `ghcr.io` на каждый push в `main`. Сборка кешируется через `type=gha` — повторные билды быстрые.
