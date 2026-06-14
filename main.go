@@ -41,6 +41,8 @@ var emojiPool = []string{
 
 var usernameRe = regexp.MustCompile(`@([A-Za-z][A-Za-z0-9_]{4,31})`)
 
+var atAllRe = regexp.MustCompile(`(?i)(^|\W)@(all|everyone|здесь|все|всех)(\W|$)`)
+
 type User struct {
 	ID        int64
 	Username  string
@@ -211,6 +213,9 @@ func (b *Bot) handle(update tgbotapi.Update) {
 	}
 
 	if !msg.IsCommand() {
+		if msg.Text != "" && atAllRe.MatchString(msg.Text) {
+			b.handleTagAll(msg)
+		}
 		return
 	}
 
@@ -238,7 +243,7 @@ func (b *Bot) handlePrivate(msg *tgbotapi.Message) {
 
 func (b *Bot) handleHelp(msg *tgbotapi.Message) {
 	text := "Команды:\n" +
-		"• /all (также /все, /everyone, /здесь) — тегнуть всех известных участников\n" +
+		"• /all (также /все, /everyone, /здесь, либо просто @all / @everyone / @все / @здесь в тексте) — тегнуть всех известных участников\n" +
 		"• /add @user1 @user2 — добавить участников в базу вручную (только админ)\n" +
 		"• /count — сколько участников я уже видел\n" +
 		"• /help — эта справка\n\n" +
